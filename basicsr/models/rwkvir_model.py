@@ -3,17 +3,52 @@ from torch.nn import functional as F
 
 from basicsr.utils.registry import MODEL_REGISTRY
 from basicsr.models.sr_model import SRModel
-
+from basicsr.utils import get_root_logger
 
 @MODEL_REGISTRY.register()
 class RWKVIRModel(SRModel):
     """RWKVIR model for image restoration."""
+    def setup_optimizers(self):
+        train_opt = self.opt['train']
+        optim_params = []
+        optim_params_wd = []
+        for k, v in self.net_g.named_parameters():
+            if v.requires_grad:
+                if 'conv' or 'linear' in k:
+                    optim_params_wd.append(v)
+                else:
+                    optim_params.append(v)
+            else:
+                logger = get_root_logger()
+                logger.warning(f'Params {k} will not be optimized.')
 
+        optim_type = train_opt['optim_g'].pop('type')
+        if optim_type == 'Adam':
+            self.optimizer_g = torch.optim.Adam([{'params': optim_params, 'weight_decay': train_opt['optim_g']['weight_decay']},
+                                                 {'params': optim_params_wd}], lr = train_opt['optim_g']['lr'],
+                                                 betas = train_opt['optim_g']['betas'])
+        elif optim_type == 'Adamw':
+            self.optimizer_g = torch.optim.AdamW([{'params': optim_params, 'weight_decay': train_opt['optim_g']['weight_decay']},
+                                                 {'params': optim_params_wd}], lr = train_opt['optim_g']['lr'],
+                                                 betas = train_opt['optim_g']['betas'])
+        else:
+            raise NotImplementedError(f'optimizer {optim_type} is not supperted yet.')
+        self.optimizers.append(self.optimizer_g)
+    
+    def get_optimizer(self, optim_type, params, lr, **kwargs):
+        if optim_type == 'Adam':
+            optimizer = torch.optim.Adam(params, lr, **kwargs)
+        elif optim_type == 'Adamw':
+            optimizer = torch.optim.AdamW(params, lr, **kwargs)
+        else:
+            raise NotImplementedError(f'optimizer {optim_type} is not supperted yet.')
+        return optimizer
+    
     # test by partitioning
     def test(self):
         _, C, h, w = self.lq.size()
-        split_token_h = h // 200 + 1  # number of horizontal cut sections
-        split_token_w = w // 200 + 1  # number of vertical cut sections
+        split_token_h = h // 256 + 1  # number of horizontal cut sections
+        split_token_w = w // 256 + 1  # number of vertical cut sections
         # padding
         mod_pad_h, mod_pad_w = 0, 0
         if h % split_token_h != 0:

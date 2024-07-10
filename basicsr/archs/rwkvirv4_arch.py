@@ -141,7 +141,7 @@ class RWKVIRv4(nn.Module):
                  shift_mode='q_shift', init_mode='local',
                  channel_gamma=1/4, shift_pixel=1, hidden_rate=4,
                  init_values=None, post_norm=False, key_norm=False, with_cp=False,
-                 drop_rate=0.1, drop_path_rate=0.1, act_layer=nn.GELU,
+                 drop_rate=0.0, drop_path_rate=0.0, act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
                  use_checkpoint=False, upscale=2, img_range=1., upsampler='', resi_connection='1conv',
                  **kwargs):
@@ -259,9 +259,20 @@ class RWKVIRv4(nn.Module):
 
         self.apply(self._init_weights)
 
+    # def _init_weights(self, m):
+    #     if isinstance(m, nn.Linear):
+    #         trunc_normal_(m.weight, std=.02)
+    #         if isinstance(m, nn.Linear) and m.bias is not None:
+    #             nn.init.constant_(m.bias, 0)
+    #     elif isinstance(m, nn.LayerNorm):
+    #         nn.init.constant_(m.bias, 0)
+    #         nn.init.constant_(m.weight, 1.0)
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
+            if getattr(m, 'init_scale', 1) == 0:
+                nn.init.constant_(m.weight, 0)
+            else:
+                trunc_normal_(m.weight, std=0.02 * getattr(m, 'init_scale', 1))
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
