@@ -56,7 +56,7 @@ python -m torch.distributed.launch --nproc_per_node=4 --master_port=1234 basicsr
 ```
 batch_size = 4 per GPU (8卡)
 ```
-python -m torch.distributed.launch --nproc_per_node=4 --master_port=1234 basicsr/train.py -opt options/train/rwkvir/train_RWKVIRv4_SR_x2_8.yml --launcher pytorch
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/rwkvir/train_RWKVIRv4_SR_x2_8.yml --launcher pytorch
 ```
 
 <!-- 1. Please download the corresponding training datasets and put them in the folder datasets/DF2K. Download the testing datasets and put them in the folder datasets/SR.
