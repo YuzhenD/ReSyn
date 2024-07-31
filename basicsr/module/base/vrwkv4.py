@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import torch.utils.checkpoint as cp
+from einops import rearrange
 
 from basicsr.module.base.utils.drop import DropPath
 
@@ -81,40 +82,6 @@ class WKV(torch.autograd.Function):
             gu = torch.sum(gu, dim=0)
             return (None, None, None, gw, gu, gk, gv)
 
-class ChannelAttention(nn.Module):
-    """Channel attention used in RCAN.
-    Args:
-        num_feat (int): Channel number of intermediate features.
-        squeeze_factor (int): Channel squeeze factor. Default: 16.
-    """
-
-    def __init__(self, num_feat, squeeze_factor=30):
-        super(ChannelAttention, self).__init__()
-        self.attention = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(num_feat, num_feat // squeeze_factor, 1, padding=0),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(num_feat // squeeze_factor, num_feat, 1, padding=0),
-            nn.Sigmoid())
-
-    def forward(self, x):
-        y = self.attention(x)
-        return x * y
-
-class CAB(nn.Module):
-    def __init__(self, num_feat, is_light_sr= False, compress_ratio=3,squeeze_factor=24):
-        super(CAB, self).__init__()
-        self.cab = nn.Sequential(
-            nn.Conv2d(num_feat, num_feat // compress_ratio, 3, 1, 1),
-            nn.GELU(),
-            nn.Conv2d(num_feat // compress_ratio, num_feat, 3, 1, 1),
-            ChannelAttention(num_feat, squeeze_factor)
-        )
-    def forward(self, x, patch_resolution):
-        B,_,C = x.shape
-        x = x.permute(0,2,1)
-        x = x.view(B,C,patch_resolution[0],patch_resolution[1])
-        return self.cab(x).view(B,C,-1).permute(0,2,1)
 
 def RUN_CUDA(B, T, C, w, u, k, v):
     return WKV.apply(B, T, C, w.cuda(), u.cuda(), k.cuda(), v.cuda())
@@ -168,6 +135,28 @@ class VRWKV_SpatialMix(nn.Module):
         self.receptance.scale_init = 0
         self.output.scale_init = 0
 
+        self.recurrence = 2 
+        
+        self.conv_scale = nn.Parameter(torch.ones(n_embd))
+        # self.alpha = nn.Parameter(torch.randn(4), requires_grad=True) 
+        
+        self.conv1b3 = nn.Sequential(
+			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=1, stride=1),
+			nn.InstanceNorm2d(n_embd),
+			nn.GELU(),
+		)
+        self.conv1a3 = nn.Sequential(
+			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=1, stride=1),
+			nn.InstanceNorm2d(n_embd),
+			nn.GELU(),
+		)
+        self.conv33 = nn.Sequential(
+			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=3, padding=1, bias=False,
+					  groups=n_embd),
+			nn.InstanceNorm2d(n_embd),
+			nn.SiLU(),
+		)
+        
         self.with_cp = with_cp
     
     def _init_weights(self, init_mode):
@@ -181,10 +170,12 @@ class VRWKV_SpatialMix(nn.Module):
                 for h in range(self.n_embd):
                     decay_speed[h] = -5 + 8 * (h / (self.n_embd-1)) ** (0.7 + 1.3 * ratio_0_to_1)
                 self.spatial_decay = nn.Parameter(decay_speed)
+                self.spatial_decay_2 = nn.Parameter(decay_speed)
 
                 # fancy time_first
                 zigzag = (torch.tensor([(i+1)%3 - 1 for i in range(self.n_embd)]) * 0.5)
                 self.spatial_first = nn.Parameter(torch.ones(self.n_embd) * math.log(0.3) + zigzag)
+                self.spatial_second = nn.Parameter(torch.ones(self.n_embd) * math.log(0.3) + zigzag)
                 
                 # fancy time_mix
                 x = torch.ones(1, 1, self.n_embd)
@@ -232,14 +223,30 @@ class VRWKV_SpatialMix(nn.Module):
     def forward(self, x, patch_resolution):
         B, T, C = x.size()
         self.device = x.device
-
+        
+        shortcut = x
+        input_conv = shortcut.reshape([B,patch_resolution[0],patch_resolution[1],C]).permute(0, 3, 1, 2).contiguous()
+        # input_mid = self.alpha[0]*input_conv + self.alpha[1]*self.conv1a3(input_conv) + self.alpha[2]*self.conv33(input_conv) + self.alpha[3]*self.conv55(input_conv)
+        out_33 = self.conv1b3(self.conv33(self.conv1a3(input_conv)))
+        output = out_33.permute(0, 2, 3, 1).contiguous()
+        x = output.reshape([B,T,C])*self.conv_scale + x
 
         sr, k, v = self.jit_func(x, patch_resolution)
-        rwkv = RUN_CUDA(B, T, C, self.spatial_decay / T, self.spatial_first / T, k, v)
         
+        # for j in range(self.recurrence):
+        if self.layer_id%2==0:
+            v = RUN_CUDA(B, T, C, self.spatial_decay / T, self.spatial_first / T, k, v)  # Here v is the rwkv
+        else:
+            h, w = patch_resolution
+            k = rearrange(k, 'b (h w) c -> b (w h) c', h=h, w=w)
+            v = rearrange(v, 'b (h w) c -> b (w h) c', h=h, w=w)
+            v = RUN_CUDA(B, T, C, self.spatial_decay / T, self.spatial_first / T, k, v)
+            v = rearrange(v, 'b (w h) c -> b (h w) c', h=h, w=w) 
+        
+        rwkv = v        
         if self.key_norm is not None:
             rwkv = self.key_norm(rwkv)
-        rwkv = sr * rwkv
+        rwkv = sr * rwkv + output.reshape([B,T,C])*self.conv_scale
         rwkv = self.output(rwkv)
         return rwkv
 
@@ -252,7 +259,7 @@ class VRWKV_ChannelMix(nn.Module):
         self.layer_id = layer_id
         self.n_layer = n_layer
         self.n_embd = n_embd
-        self._init_weights(init_mode)
+        # self._init_weights(init_mode)
         self.shift_pixel = shift_pixel
         self.shift_mode = shift_mode
         if shift_pixel > 0:
@@ -274,25 +281,10 @@ class VRWKV_ChannelMix(nn.Module):
         self.value.scale_init = 0
         self.receptance.scale_init = 0
         
-        
-        # Setting of conv method
-        self.conv_scale = nn.Parameter(torch.ones(n_embd))
-        self.conv1b3 = nn.Sequential(
-			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=1, stride=1),
-			nn.InstanceNorm2d(n_embd),
-			nn.GELU(),
-		)
-        self.conv1a3 = nn.Sequential(
-			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=1, stride=1),
-			nn.InstanceNorm2d(n_embd),
-			nn.GELU(),
-		)
-        self.conv33 = nn.Sequential(
-			nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=3, stride=1, padding=1, bias=False,
-					  groups=n_embd),
-			nn.InstanceNorm2d(n_embd),
-			nn.SiLU(),
-		)
+        self.conv1x1 = nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=1, groups=n_embd, bias=False)
+        self.conv3x3 = nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=3, padding=1, groups=n_embd, bias=False)
+        self.conv5x5 = nn.Conv2d(in_channels=n_embd, out_channels=n_embd, kernel_size=5, padding=2, groups=n_embd, bias=False) 
+        self.alpha = nn.Parameter(torch.randn(4), requires_grad=True)
         
         self.with_cp = False
     
@@ -316,17 +308,14 @@ class VRWKV_ChannelMix(nn.Module):
 
     def forward(self, x, patch_resolution):
         B, T, C = x.size()
-        shortcut = x
-        input_conv = shortcut.reshape([B,patch_resolution[0],patch_resolution[1],C]).permute(0, 3, 1, 2).contiguous()
-        out_33 = self.conv1a3(self.conv33(self.conv1b3(input_conv)))
-        output = out_33.permute(0, 2, 3, 1).contiguous()
-        x = output.reshape([B,T,C])*self.conv_scale + x
-
-        # if self.shift_pixel > 0:
-        #     xx = self.shift_func(x, self.shift_pixel, self.channel_gamma, patch_resolution)
-        #     xk = x * self.spatial_mix_k + xx * (1 - self.spatial_mix_k)
-        #     xr = x * self.spatial_mix_r + xx * (1 - self.spatial_mix_r)
-        # else:
+        x = x.reshape([B,patch_resolution[0],patch_resolution[1],C]).permute(0, 3, 1, 2).contiguous()
+        out1x1 = self.conv1x1(x)
+        out3x3 = self.conv3x3(x)
+        out5x5 = self.conv5x5(x) 
+        out = self.alpha[0]*x + self.alpha[1]*out1x1 + self.alpha[2]*out3x3 + self.alpha[3]*out5x5
+        out = out.permute(0, 2, 3, 1).contiguous()
+        x = out.reshape([B,T,C])
+        
         xk = x
         xr = x
 
@@ -358,31 +347,22 @@ class Block(nn.Module):
                                    shift_pixel, hidden_rate, init_mode=init_mode, key_norm=key_norm)
         # self.ffn = CAB(n_embd)
         
-        self.layer_scale = (init_values is not None)
         self.post_norm = post_norm
-        if self.layer_scale:
-            self.gamma1 = nn.Parameter(init_values * torch.ones((n_embd)), requires_grad=True)
-            self.gamma2 = nn.Parameter(init_values * torch.ones((n_embd)), requires_grad=True)
+        
+        self.gamma1 = nn.Parameter(torch.ones(n_embd), requires_grad=True)
+        self.gamma2 = nn.Parameter(torch.ones(n_embd), requires_grad=True)
         self.with_cp = with_cp
 
-    def forward(self, x, patch_resolution):
+    def forward(self, x, patch_resolution=None):
         def _inner_forward(x):
             if self.layer_id == 0:
                 x = self.ln0(x)
             if self.post_norm:
-                if self.layer_scale:
-                    x = x + self.drop_path(self.gamma1 * self.ln1(self.att(x, patch_resolution)))
-                    x = x + self.drop_path(self.gamma2 * self.ln2(self.ffn(x, patch_resolution)))
-                else:
-                    x = x + self.drop_path(self.ln1(self.att(x, patch_resolution)))
-                    x = x + self.drop_path(self.ln2(self.ffn(x, patch_resolution)))
+                x = self.gamma1*x + self.drop_path(self.ln1(self.att(x, patch_resolution)))
+                x = self.gamma2*x + self.drop_path(self.ln2(self.ffn(x, patch_resolution)))       
             else:
-                if self.layer_scale:
-                    x = x + self.drop_path(self.gamma1 * self.att(self.ln1(x), patch_resolution))
-                    x = x + self.drop_path(self.gamma2 * self.ffn(self.ln2(x), patch_resolution))
-                else:
-                    x = x + self.drop_path(self.att(self.ln1(x), patch_resolution))
-                    x = x + self.drop_path(self.ffn(self.ln2(x), patch_resolution))
+                x = self.gamma1*x + self.drop_path(self.att(self.ln1(x), patch_resolution))
+                x = self.gamma2*x + self.drop_path(self.ffn(self.ln2(x), patch_resolution))
             return x
         if self.with_cp and x.requires_grad:
             x = cp.checkpoint(_inner_forward, x)

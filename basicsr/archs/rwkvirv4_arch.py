@@ -40,7 +40,7 @@ class RWKVBlock(nn.Module):  # Add CNN block here for the RWKV improevment
         self.RWKV = RWKV(n_embd=dim, n_layer=n_layer, layer_id=layer_id, channel_gamma=channel_gamma, shift_mode=shift_mode, init_mode=init_mode,
                         shift_pixel=shift_pixel, drop_path=drop_path, hidden_rate=hidden_rate,
                         init_values=init_values, post_norm=post_norm, key_norm=key_norm, with_cp=with_cp)
-    
+        # self.RWKV = RWKV(n_embd=dim, n_layer=n_layer, layer_id=layer_id, hidden_rate=4, init_mode='fancy', key_norm=key_norm)
     def forward(self, x, patch_resolution):
         # RWKV
         x = self.RWKV(x, patch_resolution)
