@@ -8,13 +8,9 @@
 
 ## 📑 Contents
 
-- [Visual Results](#visual_results)
-- [News](#news)
 - [TODO](#todo)
-- [Installation](#installation)
 - [Training](#training)
 - [Testing](#testing)
-- [Citation](#cite)
 
 
 ## <a name="todo"></a> ☑️ TODO
@@ -192,21 +188,6 @@ python basicsr/test.py -opt options/test/test_MambaIR_ColorDN_level50.yml
     python setup.py develop
     ```
 
-
-
-
-## <a name="cite"></a> 🥰 Citation
-
-Please cite us if our work is useful for your research.
-
-```
-@article{guo2024mambair,
-  title={MambaIR: A Simple Baseline for Image Restoration with State-Space Model},
-  author={Guo, Hang and Li, Jinmin and Dai, Tao and Ouyang, Zhihao and Ren, Xudong and Xia, Shu-Tao},
-  journal={arXiv preprint arXiv:2402.15648},
-  year={2024}
-}
-```
 
 ## License
 
