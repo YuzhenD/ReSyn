@@ -4,8 +4,6 @@
 
 ## RWKVIR
 
-
-
 ## 📑 Contents
 
 - [TODO](#todo)
