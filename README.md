@@ -1,7 +1,3 @@
-<p align="center">
-    <img src="assets/logo.png" width="300">
-</p>
-
 ## RWKVIR
 
 ## 📑 Contents
@@ -44,13 +40,8 @@ The datasets used in our training and testing are orgnized as follows:
 
 ### Train on SR
 Train classic RWKVIR to converage
-batch_size = 8 per GPU (4卡)
 ```
-python -m torch.distributed.launch --nproc_per_node=4 --master_port=1234 basicsr/train.py -opt options/train/rwkvir/train_RWKVIRv4_SR_x2.yml --launcher pytorch
-```
-batch_size = 4 per GPU (8卡)
-```
-python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/rwkvir/train_RWKVIRv4_SR_x2_8.yml --launcher pytorch
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/rwkvir/train_RWKVIRv4_SR_x2.yml --launcher pytorch
 ```
 
 <!-- 1. Please download the corresponding training datasets and put them in the folder datasets/DF2K. Download the testing datasets and put them in the folder datasets/SR.
@@ -145,18 +136,6 @@ python basicsr/test.py -opt options/test/test_MambaIR_lightSR_x4.yml
 2. Download the corresponding models and put them in the folder `experiments/pretrained_models`.
 
 3. Follow the instructions below to begin testing our model.
-
-```
-# test on denosing15
-python basicsr/test.py -opt options/test/test_MambaIR_ColorDN_level15.yml
-
-# test on denosing25
-python basicsr/test.py -opt options/test/test_MambaIR_ColorDN_level25.yml
-
-# test on denosing50
-python basicsr/test.py -opt options/test/test_MambaIR_ColorDN_level50.yml
-```
-
 
 
 ### Test on Real Image Denoising
